@@ -80,3 +80,5 @@ sensor value, and failed events (5 min window).
 ## Performance report
 
 See [PERFORMANCE_BUDGET_REPORT.md](./PERFORMANCE_BUDGET_REPORT.md).
+video walkthrough -- https://drive.google.com/file/d/1mEF2NK6fpwQ90eHOOr1f99JI6ZmnY7Ag/view?usp=sharing
+
