@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Edge Robot Observability</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Courier New', monospace;
+      background: #0d0d0d;
+      color: #00ff00;
+      padding: 24px;
+      min-height: 100vh;
+    }
+    h1 {
+      border-bottom: 1px solid #2a2a2a;
+      padding-bottom: 14px;
+      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 1.4em;
+      letter-spacing: 1px;
+    }
+    .status { display: flex; align-items: center; gap: 10px; font-size: 0.55em; }
+    .dot { height: 12px; width: 12px; background: #ff9900; border-radius: 50%; }
+    .dot.live { background: #00ff00; box-shadow: 0 0 8px #00ff00; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 18px;
+      margin-bottom: 24px;
+    }
+    .card {
+      border: 1px solid #2a2a2a;
+      padding: 18px;
+      background: #161616;
+      border-radius: 4px;
+    }
+    .card h3 { font-size: 0.8em; color: #00cc00; margin-bottom: 10px; letter-spacing: 1px; }
+    .val { font-size: 2.2em; font-weight: bold; color: #ffffff; }
+    .sub { font-size: 0.7em; color: #555; margin-top: 6px; }
+    .chart h3 { font-size: 0.8em; color: #00cc00; margin-bottom: 10px; letter-spacing: 1px; }
+    canvas { width: 100%; height: 120px; background: #161616; border: 1px solid #2a2a2a; border-radius: 4px; }
+    .footer { margin-top: 20px; font-size: 0.65em; color: #444; text-align: right; }
+  </style>
+</head>
+<body>
+
+<h1>
+  <span>Edge Robot Observability</span>
+  <div class="status">
+    <span id="status-text">Connecting…</span>
+    <span id="status-dot" class="dot"></span>
+  </div>
+</h1>
+
+<div class="grid">
+  <div class="card">
+    <h3>SENSOR VALUE</h3>
+    <div id="sensor-value" class="val">—</div>
+    <div class="sub">sensor_value (°C)</div>
+  </div>
+  <div class="card">
+    <h3>TOTAL REQUESTS</h3>
+    <div id="req-total" class="val">—</div>
+    <div class="sub">sensor_requests_total</div>
+  </div>
+  <div class="card">
+    <h3>FAILED EVENTS</h3>
+    <div id="failed" class="val">—</div>
+    <div class="sub">sensor_failed_events_total</div>
+  </div>
+  <div class="card">
+    <h3>CPU SPIKE</h3>
+    <div id="cpu-spike" class="val">—</div>
+    <div class="sub">sensor_cpu_spike (0 / 1)</div>
+  </div>
+  <div class="card">
+    <h3>AVG LATENCY</h3>
+    <div id="latency" class="val">—</div>
+    <div class="sub">avg of processing_latency (s)</div>
+  </div>
+</div>
+
+<div class="chart">
+  <h3>REQUEST COUNT — last 30 samples</h3>
+  <canvas id="chart" width="1200" height="120"></canvas>
+</div>
+
+<div class="footer" id="last-update">Last updated: —</div>
+
+<script>
+  // Fetch /metrics from the sensor service itself (same origin — no CORS).
+  const METRICS_URL = '/metrics';
+  const POLL_MS = 3000;
+  const MAX_HISTORY = 30;
+  const history = [];
+
+  function setStatus(live) {
+    const dot = document.getElementById('status-dot');
+    const txt = document.getElementById('status-text');
+    dot.classList.toggle('live', live);
+    txt.textContent = live ? 'LIVE' : 'Disconnected';
+  }
+
+  // Parse Prometheus text exposition format into a {metric: value} map.
+  // Lines like `sensor_requests_total 42` or `metric{label="x"} 1.2`.
+  function parseMetrics(text) {
+    const out = {};
+    for (const line of text.split('\n')) {
+      if (!line || line.startsWith('#')) continue;
+      const m = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+([\d.eE+\-]+)/);
+      if (!m) continue;
+      const name = m[1];
+      const value = parseFloat(m[3]);
+      // First occurrence wins for bare metrics; histogram sum/count handled by name suffix.
+      if (out[name] === undefined) out[name] = value;
+    }
+    return out;
+  }
+
+  function draw() {
+    const c = document.getElementById('chart');
+    const ctx = c.getContext('2d');
+    const W = c.width, H = c.height;
+    ctx.clearRect(0, 0, W, H);
+    if (history.length < 2) return;
+    const min = Math.min(...history);
+    const max = Math.max(...history);
+    const range = max - min || 1;
+    const step = W / (MAX_HISTORY - 1);
+
+    ctx.strokeStyle = '#00cc00';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    history.forEach((v, i) => {
+      const x = i * step;
+      const y = H - ((v - min) / range) * (H - 10) - 5;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    ctx.lineTo((history.length - 1) * step, H);
+    ctx.lineTo(0, H);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(0,204,0,0.08)';
+    ctx.fill();
+  }
+
+  function set(id, v, decimals) {
+    const el = document.getElementById(id);
+    if (v === undefined || v === null || Number.isNaN(v)) { el.textContent = '—'; return; }
+    el.textContent = decimals ? v.toFixed(decimals) : Math.round(v).toString();
+  }
+
+  async function update() {
+    try {
+      const r = await fetch(METRICS_URL, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const m = parseMetrics(await r.text());
+
+      setStatus(true);
+      set('sensor-value', m['sensor_value'], 2);
+      set('req-total', m['sensor_requests_total']);
+      set('failed', m['sensor_failed_events_total']);
+      set('cpu-spike', m['sensor_cpu_spike']);
+
+      const sum = m['sensor_processing_latency_seconds_sum'];
+      const count = m['sensor_processing_latency_seconds_count'];
+      const avg = (sum !== undefined && count) ? sum / count : NaN;
+      set('latency', avg, 4);
+
+      history.push(m['sensor_requests_total'] || 0);
+      if (history.length > MAX_HISTORY) history.shift();
+      draw();
+
+      document.getElementById('last-update').textContent =
+        'Last updated: ' + new Date().toLocaleTimeString();
+    } catch (e) {
+      setStatus(false);
+    }
+  }
+
+  update();
+  setInterval(update, POLL_MS);
+</script>
+</body>
+</html>

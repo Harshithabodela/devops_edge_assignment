@@ -1,0 +1,71 @@
+# Edge observability stack — 2-core / 500 MB RAM device.
+# Total memory budget: 270 MB (sensor 50 + Prometheus 90 + Grafana 130).
+
+services:
+
+  sensor-service:
+    build: .
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 50M
+          cpus: "0.5"
+    # Python is always present in python:3.11-slim; wget/curl are not.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=24h"
+      - "--storage.tsdb.wal-compression"
+      - "--query.max-concurrency=2"
+      - "--web.cors.origin=.*"
+    restart: unless-stopped
+    depends_on:
+      - sensor-service
+    deploy:
+      resources:
+        limits:
+          memory: 90M
+          cpus: "0.5"
+
+  grafana:
+    image: grafana/grafana-oss:10.4.2
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_LOG_LEVEL: "warn"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: 130M
+          cpus: "0.5"
+
+volumes:
+  prometheus_data:
+  grafana_data:
